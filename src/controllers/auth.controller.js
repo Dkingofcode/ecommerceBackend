@@ -1,65 +1,82 @@
 const User = require('../models/User');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
-const emailService = require('../utils/email.service');
+//const emailService = require('../utils/email.service');
+const emailService = require('../utils/email');
 
 class AuthController {
   // Register new user
-  async register(req, res) {
-    const { firstName, lastName, email, password, phone } = req.body;
 
-    // Check if user exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email already registered',
-      });
+async register(req, res) {
+  const { email, firstName, lastName, password } = req.body;
+
+  const user = await User.create({ email, firstName, lastName, password });
+
+  // Generate raw token
+  const verificationToken = crypto.randomBytes(32).toString('hex');
+
+  // Hash token before saving in DB
+  user.emailVerificationToken = crypto
+    .createHash('sha256')
+    .update(verificationToken)
+    .digest('hex');
+  
+  user.emailVerificationExpires = Date.now() + 60 * 60 * 1000; // 1 hour
+  await user.save();
+
+  // ✅ Send email using the service
+  await emailService.sendVerificationEmail(email, firstName, verificationToken);
+
+  res.status(201).json({
+    success: true,
+    message: 'Registration successful. Check your email to verify your account.',
+  });
+}
+
+async registerAdmin(req, res) {
+  const { email, firstName, lastName, password } = req.body;
+
+  const user = await User.create({
+    email,
+    firstName,
+    lastName,
+    password,
+    role: 'admin', // ✅ explicitly set
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Admin created successfully',
+    data: {
+      user
     }
+  });
+}
 
-    // Create user
-    const user = await User.create({
-      firstName,
-      lastName,
-      email,
-      password,
-      phone,
-    });
 
-    // Generate email verification token
-    const verificationToken = user.generateEmailVerificationToken();
-    await user.save();
+async registerSeller(req, res) {
+  const { email, firstName, lastName, password } = req.body;
 
-    // Send verification email
-    if (process.env.ENABLE_EMAIL === 'true') {
-      try {
-        await emailService.sendVerificationEmail(
-          email,
-          firstName,
-          verificationToken
-        );
-      } catch (error) {
-        logger.error('Email sending failed:', error);
-      }
+  const user = await User.create({
+    email,
+    firstName,
+    lastName,
+    password,
+    role: 'seller', // ✅ explicitly set
+  });
+
+  res.status(201).json({
+    success: true,    
+    message: 'Seller created successfully',
+    data: {
+      user
     }
+  });
+}
 
-    // Generate tokens
-    const accessToken = user.generateAuthToken();
-    const refreshToken = user.generateRefreshToken();
 
-    user.refreshToken = refreshToken;
-    await user.save();
 
-    res.status(201).json({
-      success: true,
-      message: 'Registration successful. Please verify your email.',
-      data: {
-        user,
-        accessToken,
-        refreshToken,
-      },
-    });
-  }
+
 
   // Login user
   async login(req, res) {
@@ -125,18 +142,26 @@ class AuthController {
     });
   }
 
-  // Verify email
   async verifyEmail(req, res) {
+  try {
     const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Token is required' });
+    }
 
+    // Decode token (in case it was URL encoded)
+    const decodedToken = decodeURIComponent(token);
+
+    // Hash the token
     const hashedToken = crypto
       .createHash('sha256')
-      .update(token)
+      .update(decodedToken)
       .digest('hex');
 
+    // Find user by hashed token and check expiry
     const user = await User.findOne({
       emailVerificationToken: hashedToken,
-      emailVerificationExpires: { $gt: Date.now() },
+      emailVerificationExpires: { $gt: new Date() },
     });
 
     if (!user) {
@@ -146,6 +171,7 @@ class AuthController {
       });
     }
 
+    // Mark email as verified
     user.isEmailVerified = true;
     user.emailVerificationToken = undefined;
     user.emailVerificationExpires = undefined;
@@ -155,7 +181,13 @@ class AuthController {
       success: true,
       message: 'Email verified successfully',
     });
+  } catch (err) {
+    console.error('Verify email error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
+}
+
+
 
   // Resend verification email
   async resendVerification(req, res) {

@@ -49,7 +49,7 @@ router.post(
     body('price').isFloat({ min: 0 }),
     body('category').notEmpty(),
     body('sku').trim().notEmpty(),
-    body('stock.quantity').isInt({ min: 0 }),
+    body('stockQuantity').isInt({ min: 0 }),
     validate,
   ],
   productController.createProduct
